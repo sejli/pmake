@@ -1,0 +1,249 @@
+#!/usr/bin/perl
+# Sean Li sejli@ucsc.edu
+use strict;
+use warnings;
+use Data::Dumper;
+use Getopt::Std;
+
+my %options;
+my %macros;
+my $target;
+my @targets;
+my %deps;
+my %commands;
+my %strsignal = (
+   1 => "Hangup",
+   2 => "Interrupt",
+   3 => "Quit",
+   4 => "Illegal instruction",
+   5 => "Trace/breakpoint trap",
+   6 => "Aborted",
+   7 => "Bus error",
+   8 => "Floating point exception",
+   9 => "Killed",
+   11 => "Segmentation fault",
+   13 => "Broken pipe",
+   14 => "Alarm clock",
+   15 => "Terminated",
+   16 => "Stack fault",
+   17 => "Child exited",
+   18 => "Continued",
+   19 => "Stopped (signal)",
+   20 => "Stopped",
+   21 => "Stopped (tty input)",
+   22 => "Stopped (tty output)",
+   24 => "CPU time limit exceeded",
+   25 => "File size limit exceeded",
+   26 => "Virtual timer expired",
+   27 => "Profiling timer expired",
+   28 => "Window changed",
+   29 => "I/O possible",
+   30 => "Power failure",
+   31 => "Bad system call",
+);
+
+open(my $file, "<", "Makefile") or die "failed to open Makefile";
+
+sub getTime ($) {
+   my @filestat = stat @_;
+   return $filestat[9];
+}
+
+sub parse_dep ($) {
+   my ($line) = @_;
+   return undef unless $line =~ m/^(\S+)\s*:\s*(.*?)\s*$/;
+   my ($target, $dependency) = ($1, $2);
+   my @dependencies = split m/\s+/, $dependency;
+   if($target =~ m/\${([^}]+)}/){
+         my $m = $1;
+         my $mA = ($macros{$m});
+         $m = join(" ", @$mA);
+         $target = $m;
+   }
+   foreach my $val (@dependencies){
+      if($val =~ m/\${([^}]+)}/){
+         my $mac = $1;
+         my $macroArray = ($macros{$mac});
+         $mac = join(" ", @$macroArray);
+         $val = $mac;
+      }
+   }
+   return $target, \@dependencies;
+}
+
+sub parse_commands ($){
+   my ($line) = @_;
+   return undef unless $line =~ m/^\s((\S+\s*)+)$/;
+   my $temp = $1;
+   chomp($temp);
+   my @commandArray = split m/\s+/, $temp;
+   foreach my $val (@commandArray){
+      if($val =~ m/\${([^}]+)}/){
+         my $tempMac = $1;
+         my $comMacroArray = $macros{$tempMac};
+         $tempMac = join(" ", @$comMacroArray);
+         if($val =~ m/\.\/*+/){
+            $tempMac = "./" . $tempMac;
+         }
+         $val = $tempMac;
+      }
+   }
+   $temp = join(" ", @commandArray);
+   return $temp;
+}
+
+sub parse_macros ($) {
+   my ($line) = $_;
+   return undef unless $line =~ m/^([A-Z]+)\s*=\s*(\S+.*\s*)+$/;
+   my $removedNewLine = $2;
+   chomp($removedNewLine);
+   my ($macro, $value) = ($1, $removedNewLine);
+   my @values = split m/\s+/, $value;
+   foreach my $val (@values){
+      if($val =~ m/\${([^}]+)}/){
+         my $mac = $1;
+         my $macroArray = $macros{$mac};
+         $mac = join(" ", @$macroArray);
+         $val = $mac;
+      }
+   }
+   return $macro, \@values;
+}
+
+sub execute ($) {
+   my ($target) = @_;
+   my $com = $commands{$target};
+   my $isNotDashCommand = 1;
+   my @splitCommands = split m/\s+/, $com;
+   foreach my $commandInput (@splitCommands){
+      if($commandInput =~ m/\$</){
+         my $prereqs = $deps{$target};
+         $commandInput = pop(@$prereqs);
+      }
+   }
+   $com = join(" ", @splitCommands);
+   if($com =~ m/^-\s(.+)/) {
+      $com = $1;
+      print "$com\n";
+      $isNotDashCommand = 0;
+   }
+   elsif($com =~ m/^@\s(.+)/) {
+      $com = $1;
+   }
+   else {
+      print "$com\n";
+   }
+   system($com);
+   my $term_signal = $? & 0x7F;
+   my $core_dumped = $? & 0x80;
+   my $exit_status = ($? >> 8) & 0xFF;
+   if($isNotDashCommand) {
+      if($term_signal != 0){
+         my $errorMessage = $strsignal{$term_signal};
+         die "$term_signal: $errorMessage\n";
+      }
+      if($exit_status != 0){
+         my $errorMessage = $strsignal{$exit_status};
+         die "$exit_status: $errorMessage\n";
+      }
+   }
+}
+
+sub make;
+sub make ($) {
+   my ($target) = @_;
+   my $prereqs2 = $deps{$target};
+   my $joined = join(" ", @$prereqs2);
+   my @prereqs;
+   if($joined =~ m/(\S*\s\S*)+/){
+      @prereqs = split m/\s+/, $joined;
+   }
+   else{
+      @prereqs = @$prereqs2;
+   }
+   my $canExecute = 0;
+   if(scalar(@prereqs) > 0){
+      $canExecute = 0;
+   }
+   else {
+      $canExecute = 1;
+   }
+   foreach my $prereq (@prereqs){
+      if(defined $deps{$prereq}){
+         $canExecute = 1;
+         make ($prereq);
+      }
+      else{
+         my $prereqTime = getTime $prereq;
+         if(-e $target){
+            my $targetTime = getTime $target;
+            if($targetTime < $prereqTime){
+               $canExecute = 1;
+            }
+            else {
+               $canExecute = 0;
+            }
+         }
+         else{
+            $canExecute = 1;
+         }
+      }
+   }
+   if($canExecute){
+      if(defined $commands{$target}){
+         execute $target;
+      }
+      else{
+         if($target =~ m/\w+\.\w/){
+            if(defined $deps{"%.o"}){
+               if($target =~ /(\w+)\.\w+/){
+                  $target = $1;
+               }
+               my $string = $target.".c";
+               my @stringArray = ();
+               push(@stringArray, $string);
+               $deps{"%.o"} = \@stringArray;
+               execute "%.o";
+            }
+         }
+      }
+   }
+}
+
+my $corrTarget = '';
+while(<$file>) {
+   my ($dep, $values) = parse_dep $_;
+   my $com = parse_commands $_;
+   my ($macro, $values2) = parse_macros $_;
+   next unless defined $dep or defined $com or defined $macro;
+   if(defined $dep) {
+      $deps{$dep} = $values;
+      $corrTarget = $dep;
+      unshift(@targets, $dep);
+   }
+   elsif(defined $macro) {
+      $macros{$macro} = $values2;
+   }
+   else {
+      $commands{$corrTarget} = $com;
+   }
+}
+
+getopts ("d", \%options);
+if($options{d}){
+   print "-d for Debugging\n";
+   print Dumper %deps;
+   print Dumper %macros;
+   print Dumper %commands;
+}
+
+if(defined $ARGV[0]){
+   my $target = $ARGV[0];
+   if(defined $deps{$target}){
+      make $target;
+   }
+}
+else {
+   my $target = pop(@targets);
+   make $target;
+}

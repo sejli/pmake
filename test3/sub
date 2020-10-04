@@ -1,0 +1,26 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+my %sub = (
+   "foo"=> "bar",
+   "this"=> "that",
+);
+
+my @lines = (
+   'This is a ${foo} test.',
+   #'That is a ${this} test.',
+   #'And there is an ${error} test.',
+);
+
+for my $line (@lines) {
+   print "in: $line\n";
+   while ($line =~ m/\${/) {
+      $line =~ s/\${(.*?)}/defined ($sub{$1}) ? $sub{$1} : ""/e;
+   }
+   print "out: $line\n";
+}
+
+print "\n";
+print join("----", @lines);
+print "\n";
